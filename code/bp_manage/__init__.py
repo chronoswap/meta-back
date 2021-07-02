@@ -1,5 +1,4 @@
 from flask import Blueprint
-from requests import post
 from src_utils import *
 from .endpoints import *
 

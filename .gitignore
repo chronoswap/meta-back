@@ -1,6 +1,6 @@
 chronostone.pem
-/code/bin
-/code/lib
+/code/.idea
+/code/venv
 /code/pyvenv.cfg
 /code/src_utils/constants
 /code/src_source/db

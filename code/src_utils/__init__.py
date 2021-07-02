@@ -1,11 +1,13 @@
 import sqlite3
 import random
-import json
+import functools
 import requests
 from .constants import *
+from flask import request
 from web3 import Web3
 from web3._utils.events import get_event_data
 from web3._utils.filters import construct_event_filter_params
+from web3.middleware import geth_poa_middleware
 from requests.exceptions import ConnectionError
 
 
@@ -14,6 +16,7 @@ from requests.exceptions import ConnectionError
 ##################
 def getNode():
     _w3 = Web3(Web3.HTTPProvider(NODE_RPC))
+    _w3.middleware_onion.inject(geth_poa_middleware, layer=0)
     connected = False
     while not connected:
         try:
@@ -34,7 +37,46 @@ def updateContract():
         contract.close()
 
 
+###############################
+# JSON information validators #
+###############################
 def jsonValidator(data):
+    result = True
+    # First level
+    result = result and False if "title" not in data.keys() else True
+    result = result and False if type(data["title"]) != str else True
+    result = result and False if "type" not in data.keys() else True
+    result = result and False if type(data["type"]) != str else True
+    result = result and False if "properties" not in data.keys() else True
+    result = result and False if type(data["properties"]) != dict else True
+    # Second level
+    auxData = data["properties"]
+    result = result and False if "name" not in auxData.keys() else True
+    result = result and False if type(auxData["name"]) != str else True
+    result = result and False if "decimals" not in auxData.keys() else True
+    result = result and False if type(auxData["decimals"]) != int else True
+    result = result and False if "description" not in auxData.keys() else True
+    result = result and False if type(auxData["description"]) != str else True
+    result = result and False if "image" not in auxData.keys() else True
+    result = result and False if type(auxData["image"]) != str else True
+    result = result and False if "properties" not in auxData.keys() else True
+    result = result and False if type(auxData["properties"]) != dict else True
+    # Third level
+    auxData = data["properties"]["properties"]
+    result = result and False if "up" not in auxData.keys() else True
+    result = result and False if type(auxData["up"]) != int else True
+    result = result and False if "down" not in auxData.keys() else True
+    result = result and False if type(auxData["down"]) != int else True
+    result = result and False if "left" not in auxData.keys() else True
+    result = result and False if type(auxData["left"]) != int else True
+    result = result and False if "right" not in auxData.keys() else True
+    result = result and False if type(auxData["right"]) != int else True
+    result = result and False if "hash" not in auxData.keys() else True
+    result = result and False if type(auxData["hash"]) != float else True
+    return result
+
+
+def jsonValidatorAirdrop(data):
     result = True
     # First level
     result = result and False if "title" not in data.keys() else True
@@ -77,9 +119,17 @@ def create_DB(fromEndpoint=False):
     try:
         connection, cursor = openConnection()
         cursor.execute('''
+                    create table airdrop (id integer primary key,
+                    airdropId string,
+                    hash text default "");
+                    ''')
+        cursor.execute("PRAGMA foreign_keys = ON;")
+        cursor.execute('''
             create table nft (id integer primary key,
             generation string, cardId string,
-            hash text default "", isEgg boolean);
+            hash text default "", isEgg boolean, 
+            airdropId integer default 0,
+            FOREIGN KEY (airdropId) REFERENCES airdrop (id));
             ''')
         closeConnection(connection)
         json.loads(requests.post(URL + JSON_TO_IPFS, headers=HEADERS, json=FIRST_GEN_EGG_DATA).text)
@@ -115,13 +165,10 @@ def closeConnection(connection):
     connection.close()
 
 
-def fetchEvents(
-    event,
-    argument_filters=None,
-    from_block=None,
-    to_block="latest",
-    address=None,
-    topics=None):
+##########################
+# Event Listener helpers #
+##########################
+def fetchEvents(event, argument_filters=None, from_block=None, to_block="latest", address=None, topics=None):
 
     abi = event._get_event_abi()
     abi_codec = event.web3.codec
@@ -150,6 +197,9 @@ def fetchEvents(
         yield data
 
 
+####################
+# Crates and cards #
+####################
 def getStatsTable():
     table = {}
     for gen in range(1, 5):
@@ -218,22 +268,20 @@ def handleNewCard(event):
 
 
 def lay_Egg(gen, cardId, fromEndpoint=False):
+    print("laid egg " + cardId)
     connection, cursor = openConnection()
     cursor.execute('select hash from nft where cardId == ?', (cardId,))
     if cursor.fetchone():
         closeConnection(connection)
-        return "La carta con id {} ya existe".format(cardId), 200, RESPONSE_HEADERS
-    if gen == 'first':
-        eggHash = EGG_FIRST_GEN_HASH
-    elif gen == 'second':
-        eggHash = EGG_SECOND_GEN_HASH
-    elif gen == 'third':
-        eggHash = EGG_THIRD_GEN_HASH
-    elif gen == 'fourth':
-        eggHash = EGG_FOURTH_GEN_HASH
+        if fromEndpoint:
+            return "La carta con id {} ya existe".format(cardId), 400, RESPONSE_HEADERS
+        else:
+            return "La carta con id {} ya existe".format(cardId)
+    if gen in GEN_EGG_HASH_MAPPING.keys():
+        eggHash = GEN_EGG_HASH_MAPPING[gen]
     else:
         if fromEndpoint:
-            return "Generaci�n incorrecta", 200, RESPONSE_HEADERS
+            return "Generaci�n incorrecta", 400, RESPONSE_HEADERS
         else:
             return "Generaci�n incorrecta"
     cursor.execute('insert into nft (generation, cardId, hash, isEgg) values (?, ?, ?, ?);', (gen, cardId.rjust(64, '0'), eggHash, True))
@@ -245,9 +293,10 @@ def lay_Egg(gen, cardId, fromEndpoint=False):
 
 
 def hatch_Egg(gen, cardId, data, fromEndpoint=False):
+    print("hatch egg " + str(cardId))
     if not jsonValidator(data):
         if fromEndpoint:
-            return {"result": "incorrect data"}, 200, RESPONSE_HEADERS
+            return {"result": "incorrect data"}, 400, RESPONSE_HEADERS
         else:
             return {"result": "incorrect data"}
     connection, cursor = openConnection()
@@ -255,19 +304,14 @@ def hatch_Egg(gen, cardId, data, fromEndpoint=False):
     if cursor.fetchone()[0] == 0:
         closeConnection(connection)
         if fromEndpoint:
-            return {"result": "incorrect NFT id"}, 200, RESPONSE_HEADERS
-
-    if gen == 'first':
-        metaData = FIRST_GEN_META_TEMPLATE
-    elif gen == 'second':
-        metaData = SECOND_GEN_META_TEMPLATE
-    elif gen == 'third':
-        metaData = THIRD_GEN_META_TEMPLATE
-    elif gen == 'fourth':
-        metaData = FOURTH_GEN_META_TEMPLATE
+            return {"result": "incorrect NFT id"}, 400, RESPONSE_HEADERS
+        else:
+            return {"result": "incorrect NFT id"}
+    if gen in GEN_META_TEMPLATE_MAPPING.keys():
+        metaData = GEN_META_TEMPLATE_MAPPING[gen]
     else:
         if fromEndpoint:
-            return {"result": "incorrect generation"}, 200, RESPONSE_HEADERS
+            return {"result": "incorrect generation"}, 400, RESPONSE_HEADERS
         else:
             return {"result": "incorrect generation"}
     metaData["pinataContent"] = data
@@ -278,3 +322,45 @@ def hatch_Egg(gen, cardId, data, fromEndpoint=False):
         return {"result": "crate opened! Your new card is available at id: {}".format(cardId)}, 200, RESPONSE_HEADERS
     else:
         return {"result": "crate opened! Your new card is available at id: {}".format(cardId)}
+
+
+############
+# Airdrops #
+############
+def checkAirdrop(airdropId):
+    connection, cursor = openConnection()
+    cursor.execute('select hash from airdrop where airdropId == {}'.format(airdropId))
+    if cursor.fetchone()[0] == 0:
+        closeConnection(connection)
+        return False
+    return True
+
+
+def set_Airdrop(data, airdropId, fromEndpoint=False):
+    # 1: get card values from request (it will be the same structure than the card)
+    if not jsonValidatorAirdrop(data):
+        if fromEndpoint:
+            return {"result": "incorrect data"}, 400, RESPONSE_HEADERS
+        else:
+            return {"result": "incorrect data"}
+
+    # 2: get card ids from airdrop (in contract)
+    # 3: load data into Pinata
+    # 4: save data on the DB
+
+
+################
+# Auth Wrapper #
+################
+def isItMe(func):
+    @functools.wraps(func)
+    def secure_function(*args, **kwargs):
+        data = dict(request.args)
+        if data and "key" in data.keys():
+            if data["key"] != META_BACK_SECRET:
+                return {"result": "Not authorised"}, 401, RESPONSE_HEADERS
+            else:
+                return func(*args, **kwargs)
+        else:
+            return {"result": "Bad request"}, 400, RESPONSE_HEADERS
+    return secure_function
