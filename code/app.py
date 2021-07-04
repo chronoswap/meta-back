@@ -12,5 +12,12 @@ app.register_blueprint(getterBlueprint)
 app.register_blueprint(setterBlueprint)
 
 
+@app.after_request
+def after_request(response):
+    header = response.headers
+    header['Access-Control-Allow-Origin'] = '*'
+    return response
+
+
 if __name__ == '__main__':
     app.run()
